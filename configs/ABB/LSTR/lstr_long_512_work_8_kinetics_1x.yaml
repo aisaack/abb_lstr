@@ -1,0 +1,40 @@
+DATA:
+  DATA_NAME: 'ABB'
+INPUT:
+  MODALITY: 'twostream'
+  VISUAL_FEATURE: 'rgb_kinetics_resnet50'
+  MOTION_FEATURE: 'flow_kinetics_bninception'
+MODEL:
+  MODEL_NAME: 'LSTR'
+  FEATURE_HEAD:
+    LINEAR_ENABLED: True
+    LINEAR_OUT_FEATURES: 1024
+  LSTR:
+    NUM_HEADS: 16
+    DIM_FEEDFORWARD: 1024
+    DROPOUT: 0.2
+    ACTIVATION: 'relu'
+    LONG_MEMORY_SECONDS: 32
+    LONG_MEMORY_SAMPLE_RATE: 4
+    WORK_MEMORY_SECONDS: 8
+    WORK_MEMORY_SAMPLE_RATE: 1
+    ENC_MODULE: [
+      [16, 1, True], [32, 2, True]
+    ]
+    DEC_MODULE: [-1, 2, True]
+  CRITERIONS: [['MCE', {}]]
+  CHECKPOINT: '/home/ict69/abb/repo/lstr1/checkpoints/home/ict69/abb/repo/lstr1/configs/ABB/LSTR/lstr_long_512_work_8_kinetics_1x/epoch-89.pth'
+DATA_LOADER:
+  BATCH_SIZE: 256
+  NUM_WORKERS: 8
+  PIN_MEMORY: True
+SOLVER:
+  NUM_EPOCHS: 10
+  OPTIMIZER: 'adam'
+  BASE_LR: 7e-05
+  WEIGHT_DECAY: 5e-05
+  SCHEDULER:
+    SCHEDULER_NAME: 'warmup_cosine'
+    WARMUP_FACTOR: 0.3
+    WARMUP_EPOCHS: 10.0
+    WARMUP_METHOD: 'linear'
