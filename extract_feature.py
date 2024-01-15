@@ -236,7 +236,7 @@ def main(extract_target='rgb_feature', phase='train'):
     elif extract_target == 'target':
         model = None
     else:
-        raise OSError(f'{extract_target} is not defined. Choose one of [rgb_feature, flow_feature, target]')
+        raise ValueError(f'{extract_target} is not defined. Choose one of [rgb_feature, flow_feature, target]')
 
     if model is not None:
         model = torch.nn.DataParallel(model)
@@ -257,7 +257,8 @@ def main(extract_target='rgb_feature', phase='train'):
                         frame = resize_image(frame).contiguous()
                     with torch.no_grad():
                         feature = model(frame)
-                        feature = feature.squeeze(-1).squeeze(-1)
+                        if extract_target == 'flow_feature':
+                            feature = feature.squeeze(-1).squeeze(-1)
                     frame_chunks[i] = feature
                     del feature, frame
                 frame_chunks = torch.cat(frame_chunks, dim=0).detach().cpu().numpy()
@@ -268,7 +269,8 @@ def main(extract_target='rgb_feature', phase='train'):
                     frames = resize_image(frames).contiguous()
                 with torch.no_grad():
                     feature = model(frames)
-                    feature = feature.squeeze(-1).squeeze(-1)
+                    if extract_target == 'flow_feature':
+                        feature = feature.squeeze(-1).squeeze(-1)
                 feature = feature.detach().cpu().numpy()
                 np.save(os.path.join(target_folder, name + '.npy'), feature)
             torch.cuda.empty_cache()
@@ -279,11 +281,8 @@ def main(extract_target='rgb_feature', phase='train'):
 
 if __name__ == '__main__':
     phase = 'test'
-    target = 'rgb_feature' # one of {rgb_feature, flow_feature, target_feature}
-    # main(extract_target=target, phase=phase)
+    target = 'rgb_feature' # one of {rgb_feature, flow_feature, target}
+    main(extract_target=target, phase=phase)
 
-    cfg = load_cfg()
-    dataset = ExtractDataset(cfg, phase, GET_Transform(cfg))
-    dataset[0]
-    
+      
 

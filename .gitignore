@@ -11,3 +11,12 @@ checkpoints/
 # IPython
 profile_default/
 ipython_config.py
+
+data_vis.ipynb
+dataset_cpu.py
+download.py
+eda.py
+main.ipynb
+status.txt
+tester.py
+time_series_transformer.ipynb

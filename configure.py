@@ -91,7 +91,7 @@ class SCHEDULAR:
 
 class SOLVER:
     def __init__(self):
-        self.NUM_EPOCHS = 1
+        self.NUM_EPOCHS = 50
         self.OPTIMIZER = 'adam'
         self.BASE_LR = 7e-05
         self.WEIGHT_DECAY = 5e-05

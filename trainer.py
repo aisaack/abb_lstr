@@ -4,9 +4,10 @@ import numpy as np
 
 import torch
 import torch.optim as optim
+from torch.utils.data import DataLoader
 
 from configure import load_cfg
-from model_builder import get_model
+from model_builder import Lstr
 from dataset_builder import get_dataset
 from criterions import get_criterion
 from scheduler_builder import get_scheduler
@@ -18,49 +19,16 @@ from utils import (
 
 
 
+def build_dataloader(cfg, phase):
+    data_loader = DataLoader(
+        dataset = get_dataset(cfg, phase),
+        batch_size=cfg.DATA_LOADER.BATCH_SIZE,
+        shuffle = True if phase == 'train' else False,
+        num_workers = cfg.DATA_LOADER.NUM_WORKERS,
+        pin_memory = cfg.DATA_LOADER.PIN_MEMORY
+    )
+    return data_loader
 
-class BatchDispatcher:
-    def __init__(self, batch_size):
-        self.batch_size = batch_size
-        self.buffer = None
-
-    def __call__(self, fusion_features):
-        
-        stream = [[] for _ in fusion_features]
-
-        if self.buffer is None:
-            self.buffer = [[] for _ in fusion_features]
-
-        for idx, feat in enumerate(fusion_features):
-            self.buffer[idx].extend(feat)
-        
-        del fusion_features
-        curr_batch = len(self.buffer[0])
-        
-        if curr_batch == self.batch_size:
-            stream = self.buffer
-            self.buffer = None
-            return stream
-
-        if curr_batch < self.batch_size:
-            print(f'Filled batch is {curr_batch}. {self.batch_size - curr_batch} to fill.')
-            return None
-
-        if curr_batch > self.batch_size:
-            diff = curr_batch - self.batch_size
-            cut = np.random.randint(diff)
-            print(f'Fetched batch size is {curr_batch}. Cut off {diff}, and take from {cut} to {cut+self.batch_size}')
-            for idx, feat in enumerate(self.buffer):
-                stream[idx] = feat[cut:cut + self.batch_size]
-                # feat = feat[diff:]
-            # print(len(self.buffer[0]), len(stream[0]))
-            self.buffer = None
-            return stream
-        
-
-def empty_mem(*args):
-    for arg in args:
-        del arg
 
 
 def get_optimizer(cfg, model):
@@ -85,32 +53,25 @@ def get_optimizer(cfg, model):
 
 
 def train(cfg):
-    batch_size = 16
+    batch_size = cfg.DATA.BATCH_SIZE
     logger = setup_logger(cfg, 'train')
     print('logger loaded')
 
     ckpt_setter = setup_checkpointer(cfg, phase='train')
     print('checkpoint loadded')
     
-    datasets = {phase: get_dataset(cfg, phase) for phase in cfg.SOLVER.PHASES}
-    # memory = Memory(long_term_size=cfg.MODEL.LSTR.LONG_MEMORY_SECONDS,
-    #                 short_term_size=cfg.MODEL.LSTR.WORK_MEMORY_SECONDS)
-    
-    models = get_model(cfg, pretrained='extractor')    # load weight of resnet and flownet
+    data_loaders = {phase: build_dataloader(cfg, phase) for phase in cfg.SOLVER.PHASES}
+       
+    model = Lstr(cfg) #get_model(cfg, pretrained='extractor')    # load weight of resnet and flownet
     
     criterion = get_criterion(cfg)
 
     device = get_device(cfg)        
     # device = 'cpu'
 
-    for name, model in models.items():
-        model.to(device)
-        # torch.compile(model)
-        print(f'{name} on {device}')
+    model.train(True)
 
-    models['lstr'].train(True)
-
-    optimizer = get_optimizer(cfg, models.get('lstr'))
+    optimizer = get_optimizer(cfg, model)
     print('Optimizer Loaded')
 
     if cfg.SOLVER.RESUME is True:
@@ -120,160 +81,74 @@ def train(cfg):
     scheduler = get_scheduler(cfg, optimizer, datasets['train'].__len__())
     print('Scheduler loaded')
 
-
-
-    # if torch.cuda.device_count() > 1:
-    #     model = nn.DataParallel(models['lstr'])
     for epoch in range(cfg.SOLVER.START_EPOCH, cfg.SOLVER.START_EPOCH + cfg.SOLVER.NUM_EPOCHS):
         det_losses = {phase: 0.0 for phase in cfg.SOLVER.PHASES}
         det_pred_scores = []
         det_gt_targets = []
         
-        dispatcher = BatchDispatcher(batch_size)
         start = time.time()
         for phase in cfg.SOLVER.PHASES:
             training = phase == 'train'
-            models['lstr'].train(training)
+            model.train(training)
 
-            pbar = tqdm(datasets[phase], desc=f'{phase}  Epoch: {epoch}')
-            for idx, (rgb, flow, target) in enumerate(pbar, start=1):
-                
-                rgb = rgb.to(device)                        # [frame, 3, 180, 320]
-                flow = flow.to(device)                      # [frame, 6, 180, 320]
-                target = target.to(device)                  # [frame, num_class]
-                flow = resize_image(flow).contiguous()      # [frame, 6, 256, 384]
+            with torch.set_grad_enabled(training):
 
-                rgb_feature, flow_feature, helpers = compute_features(
-                    rgb, flow, target, models, cfg.MODEL.LSTR.WORK_MEMORY_LENGTH, train_extractor=False)
-                empty_mem(*[rgb, flow, target])
-                
-                fusion_features = get_fusion_features(cfg, rgb_feature, flow_feature, helpers)    # [[fusion_rgbs * len(helper)], [fusion_flows * len(helper)], [masks * len(helper], [targets * len(helper]]
-                empty_mem(*[rgb_feature, flow_feature, helpers])
+                pbar = tqdm(data_loaders[phase], desc=f'{phase} Epoch: {epoch}')
+                for idx, data in enumerate(pbar, start=1):
+                    det_target = data[-1].to(device)
 
-                batch_stream = dispatcher(fusion_features)
-                if batch_stream is None:
-                    continue
-                else:
-                    batch_stream = [torch.stack(stream, dim=0) for stream in batch_stream]
+                    det_score = model(*[x.to(device) for x in data[:-1]])
+                    det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
+                    det_target = det_target.reshape(-1, cfg.DATA.NUM_CLASSES)
+                    det_loss = criterion['MCE'](det_score, det_target)
+                    det_losses[phase] += det_loss.item()
 
-                    with torch.set_grad_enabled(training):
-                        det_score = models['lstr'](*[stream.to(device) for stream in batch_stream[:-1]])
-                        det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
-                        det_target = batch_stream[-1].reshape(-1, cfg.DATA.NUM_CLASSES)
-                        det_loss = criterion['MCE'](det_score, det_target)
-                        det_losses[phase] += det_loss.item() * batch_size
+                    pbar.set_postfix({
+                        'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
+                        'det_loss': '{:.5f}'.format(det_loss.item()),
+                    })
 
-                        pbar.set_postfix({
-                            'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
-                            'det_loss': '{:.5f}'.format(det_loss.item()),
-                            })
-                    
-                        if training:
-                            optimizer.zero_grad()
-                            det_loss.backward()
-                            optimizer.step()
-                            scheduler.step()
-
-                        else:
-                            det_score = det_score.softmax(dim=-1).cpu().tolist()
-                            det_target = det_target.cpu().tolist()
-                            det_pred_scores.extend(det_score)
-                            det_gt_targets.extend(det_target)
-                torch.cuda.empty.cache()
-                # for test
-                # if idx > 0:
-                #     break
-
+                    if training:
+                        optimizer.zero_grad()
+                        det_loss.backward()
+                        optimizer.step()
+                        scheduler.step()
+                    else:
+                        # Prepare for evaluation
+                        det_score = det_score.softmax(dim=1).cpu().tolist()
+                        det_target = det_target.cpu().tolist()
+                        det_pred_scores.extend(det_score)
+                        det_gt_targets.extend(det_target)
+        
         end = time.time()
 
         log = []
-        log.append(f'Epoch {epoch:2}')
-        train_det_loss = det_losses['train'] / len(datasets['train'])
-        log.append(f'train det_loss: {train_det_loss:.5f}')
-
+        log.append('Epoch {:2}'.format(epoch))
+        log.append('train det_loss: {:.5f}'.format(
+            det_losses['train'] / len(data_loaders['train'].dataset),
+        ))
         if 'test' in cfg.SOLVER.PHASES:
-            det_result = compute_result['perframe'](cfg, det_gt_targets, det_pred_scores)
-            test_det_loss = det_losses['test'] / len(datasets['test'])
-            mAP = det_result['mean_AP']
-            log.append(f'test det_loss: {test_det_loss:.5f}   det mAP: {mAP:.5f}')
-        
-        log.appned(f'Running time: {end-start:.2f} sec')
+            # Compute result
+            det_result = compute_result['perframe'](
+                cfg,
+                det_gt_targets,
+                det_pred_scores,
+            )
+            log.append('test det_loss: {:.5f} det_mAP: {:.5f}'.format(
+                det_losses['test'] / len(data_loaders['test'].dataset),
+                det_result['mean_AP'],
+            ))
+        log.append('running time: {:.2f} sec'.format(
+            end - start,
+        ))
         logger.info(' | '.join(log))
 
-        ckpt_setter.save(epoch, models['lstr'], optimizer)
+        # Save checkpoint for model and optimizer
+        ckpt_setter.save(epoch, model, optimizer)
+
+        # Shuffle dataset for next epoch
+        data_loaders['train'].dataset.shuffle()
 
 
-if __name__ == '__main__':
-    cfg = load_cfg()
-    train(cfg)
-        
-
-
-        
-            
-
-            
-
-
-
-    # return
-    # for epoch in range(num_epochs):
-    #     for idx, feature in enumerate(fusion_features):
-    #         if len(feature) == 4:
-    #             fusion_rgb, fusion_flow, memory_key_padding_mask, fusion_target = feature
-    #         elif len(feature) == 3:
-    #             fusion_rgb, fusion_flow, fusion_target = feature
-            
-
-
-
-
-    #         # print(rgb_feature.size())
-    #         # print(flow_feature.size())
-
-    #         rgb_feature_padded = pad_sequence(rgb_feature, batch_first=True, padding_value=0)
-    #         flow_feature_padded = pad_sequence(flow_feature, batch_first=True, padding_value=0)
-    #         target_padded = pad_sequence(target, batch_first=True, padding_value=0)
-
-
-    # # #         #TODO
-    # # #         # 1. feature fusion
-
-    #         for frame in range(flow_feature_padded.shape[1]):
-    #             # flow_frame = flow_feature[:, frame, :]
-    #             # rgb_frame = rgb_feature[:, frame, :]
-    #             # target_frame = target[:, frame, :]
-
-    #             flow_frame = rgb_feature_padded[:, frame, :]
-    #             rgb_frame = flow_feature_padded[:, frame, :]
-    #             target_frame = target_padded[:, frame, :]
-
-    #             combined_feature = torch.cat((rgb_frame, flow_frame), dim=1)
-
-    #             memory.update(combined_feature)
-
-    #             if len(memory.long_term_memory) > 0 and len(memory.short_term_memory) > 0:
-    #                 long_term_memory_tensor = torch.stack(list(memory.long_term_memory)).to(device)
-    #                 short_term_memory_tensor = torch.stack(list(memory.short_term_memory)).to(device)
-
-    #                 outputs = models.get('lstr')(long_term_memory_tensor, short_term_memory_tensor)
-
-    #                 loss = criterion(outputs, target_frame)
-
-    #                 optimizer.zero_grad()
-    #                 loss.backward()
-    #                 optimizer.step()
-                    
-    #                 if (frame+1) % 10 == 0:
-    #                     print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(dataloader)}], Frame [{frame+1}/{flow.shape[1]}], Loss: {loss.item():.4f}')
-    #             else:
-    #                 print('Memory is not yet filled. Continue collecting features.')
-
-    # print('Training complete')
-
-
-if __name__ == '__main__':
-    cfg = load_cfg()
-    train(cfg)
 
 
