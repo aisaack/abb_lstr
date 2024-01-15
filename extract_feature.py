@@ -280,7 +280,7 @@ def main(extract_target='rgb_feature', phase='train'):
             np.save(os.path.join(target_folder, name + '.npy'), target)
 
 if __name__ == '__main__':
-    phase = 'test'
+    phase = 'test'         # one of {train, test}
     target = 'rgb_feature' # one of {rgb_feature, flow_feature, target}
     main(extract_target=target, phase=phase)
 
