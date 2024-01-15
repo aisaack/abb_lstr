@@ -7,7 +7,7 @@ import torch.optim as optim
 
 from configure import load_cfg
 from model_builder import get_model
-from dataset_builder import get_dataset
+from dataset_builder_old import get_dataset
 from criterions import get_criterion
 from scheduler_builder import get_scheduler
 from evaluation import compute_result
