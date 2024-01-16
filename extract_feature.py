@@ -6,51 +6,58 @@ from tqdm import tqdm
 
 import torch
 from torch.utils.data import Dataset
-from torchvision.transforms import transforms
-from torchvision.transforms._transforms_video import (
-    CenterCropVideo,
-    NormalizeVideo,
-)
+
 # from pytorchvideo.data.encoded_video import EncodedVideo
 
 from transforms import GET_Transform
 from configure import load_cfg
-from model_builder import get_model
 from model_builder import Resnet, Flownet
 from utils import resize_image, get_device
 
 
 class ExtractDataset(Dataset):
-    def __init__(self, cfg, phase='train', transform=None, mode=None):
+    def __init__(self, cfg, phase='train', target=None, transform=None):
         self.cfg = cfg
-        self.mode = mode
+        self.tar = target
         self.class_names = self.cfg.DATA.CLASS_NAMES
-        self.video_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VIDEO_PATH)
+
+        def get_meta_file(meta_path, phase):
+            key = 'validation' if phase == 'train' else 'test'
+            return io.loadmat(meta_path).get(f'{key}_videos')[0]
+        
         if phase == 'train':
+            self.video_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.TRAIN_PATH)
+            self.meta_file = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_META)
+            self.anno_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_ANNOTATION)
             self.file_list = self.cfg.DATA.TRAIN_SESSION_SET
+            meta_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_META)
+            
+
         elif phase == 'test':
+            self.video_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.TEST_PATH)
+            self.meta_file = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.TEST_META)
+            self.anno_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.TEST_ANNOTATION)
             self.file_list = self.cfg.DATA.TEST_SESSION_SET
+            self.file_list.remove('video_test_0000270')     # video_test_0000270 gives me Haircut class.
+            meta_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.TEST_META)
+        
+        else:
+            raise ValueError(f'phase has to be one of [train, test] but {phase} is given')
+
         # print(type(self.file_list), len(self.file_list))
         print(f'# {self.__len__()} of {phase} dataset are read.')
 
-        def get_meta_file(meta_path):
-            return io.loadmat(meta_path).get('validation_videos')[0]
-        
-        meta_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_META)
-
-        self.meta_file = get_meta_file(meta_path)
-        self.anno_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.ANNOTATION)
-
+        self.meta_file = get_meta_file(meta_path, phase)
         self.sampling_rate = self.cfg.DATA.SAMPLING_RATE    # 6
-
         self.transform = transform
+        self.phase = phase
 
     def __getitem__(self, idx):
         video_file = self.file_list[idx]
         path2file = os.path.join(self.video_path, video_file + '.mp4')
         video_class = self.get_vid_cls(video_file)
 
-        starts, ends = self.get_action_duration(video_class, video_file)
+        start_end_indices = self.get_action_duration(video_class, video_file)
         # print(video_file, video_class, starts, ends)
     
         cap = cv2.VideoCapture(path2file)
@@ -70,15 +77,16 @@ class ExtractDataset(Dataset):
             video_cap = video_cap[:-ditch]
         rgbs = self.get_rgb_sample(video_cap, int(total_frames / self.sampling_rate))
         flows = self.get_flow_sample(video_cap)
-        targets = self.get_target_label(rgbs, starts, ends, video_class)
-        if self.mode == 'target':
+        targets = self.get_target_label(rgbs, start_end_indices, video_class)
+
+        if self.tar == 'target':
             return targets, video_file
          
         rgbs = dict(video=rgbs)
         rgbs = self.transform.rgb(rgbs)
         rgbs = rgbs['video']
 
-        if self.mode == 'rgb_feature':
+        if self.tar == 'rgb_feature':
             return rgbs, video_file
 
         flows = dict(video=flows)
@@ -88,11 +96,10 @@ class ExtractDataset(Dataset):
         # print('rgb size: ', rgbs.size())
         # print('flow size: ', flows.size())
         # print('target size: ', targets.size())
-        if self.mode == 'flow_feature':
+        if self.tar == 'flow_feature':
             return flows, video_file
 
-        if self.mode == None:
-
+        if self.tar == None:
             return rgbs, flows, targets, video_file
         
 
@@ -158,29 +165,28 @@ class ExtractDataset(Dataset):
             
     def get_action_duration(self, vid_cls, vid_name):
         '''
-        Returns [int], [int]
+        Returns [[int, int], [int, int], ...]
             timestemps of starting and end of action
         '''
-        anno_path = os.path.join(self.anno_path, vid_cls + '_val.txt')
+        key = 'val' if self.phase == 'train' else 'test'
+        anno_path = os.path.join(self.anno_path, vid_cls + f'_{key}.txt')
         with open(anno_path, 'r') as f:
             anno = f.readlines()
 
-        starts = []
-        ends = []
+        start_end_idx = []
         for ann in anno:
             anno_list = ann.split(' ')
             if vid_name == anno_list[0]:
                 start = float(anno_list[2])
                 end = float(anno_list[3].rstrip())
-                starts.append(start)
-                ends.append(end)
-        
-        return starts, ends
+                start_end_idx.append([start, end])
+        return start_end_idx
     
-    def get_target_label(self, video_frames, starts, ends, video_class):
+    def get_target_label(self, video_frames, start_end_indices, video_class):
         target_label = torch.zeros((len(video_frames), len(self.class_names)))
         class_id = self.class_names.index(video_class)
-        for start, end in zip(starts, ends):
+        for indices in start_end_indices:
+            start, end = indices
             start = start * (self.sampling_rate-1)
             end = end * (self.sampling_rate-1)
             target_label[int(start):int(end)+1, class_id] = 1
@@ -207,18 +213,30 @@ def chunk_frames(frames):
         return frames
     return frames.chunk(num_chunk, dim=0)
 
+def process_flow_feature(model, frame):
+    frame = resize_image(frame).contiguous()
+    with torch.no_grad():
+        feature = model(frame)
+        feature = feature.squeeze(-1).squeeze(-1)
+    return feature
+
+def process_rgb_feature(model, frame):
+    with torch.no_grad():
+        feature = model(frame)
+    return feature
+
 def main(extract_target='rgb_feature', phase='train'):
     """
     extraction_target: one of {rgb_feature, flow_feature, target_feature}
     """
 
     print()
-    print(f'Start extracting {extract_target}.')
+    print(f'Start extracting {phase} dataset {extract_target}.')
     print()
     cfg = load_cfg()
-    video_path = './dataset/thumos14/validation'
-    target_folder = video_path.replace('validation', extract_target)
-
+    key = 'validation' if phase == 'train' else 'test'
+    video_path = f'./dataset/thumos14/{key}'
+    target_folder = video_path.replace(key, extract_target)
     if not os.path.isdir(target_folder):
         os.mkdir(target_folder)
         print(f'Create folder at {target_folder}')
@@ -242,35 +260,38 @@ def main(extract_target='rgb_feature', phase='train'):
         model = torch.nn.DataParallel(model)
         model = model.to(device)
 
-    dataset = ExtractDataset(cfg, phase, GET_Transform(cfg), mode=extract_target)
+    dataset = ExtractDataset(cfg, phase, extract_target, GET_Transform(cfg))
     pbar = tqdm(dataset)
     for idx, data in enumerate(pbar):
-        
+        if data is None:
+            continue
         if not extract_target == 'target':
             frames, name = data
             if frames.size(0) > 840:
-                frame_chunks = chunk_frames(frames)      # returns list of chunks of frame.
+                frame_chunks = chunk_frames(frames)      # returns tuple of chunks of frame.
                 frame_chunks = list(frame_chunks)
                 for i, frame in enumerate(frame_chunks):
                     frame = frame.to(device)
+
                     if extract_target == 'flow_feature':
-                        frame = resize_image(frame).contiguous()
-                    with torch.no_grad():
-                        feature = model(frame)
-                        if extract_target == 'flow_feature':
-                            feature = feature.squeeze(-1).squeeze(-1)
+                        feature = process_flow_feature(model, frame)
+                    else:
+                        feature = process_rgb_feature(model, frame)
+
                     frame_chunks[i] = feature
                     del feature, frame
                 frame_chunks = torch.cat(frame_chunks, dim=0).detach().cpu().numpy()
                 np.save(os.path.join(target_folder, name + '.npy'), frame_chunks)
+
+
             else:
                 frames = frames.to(device)
+
                 if extract_target == 'flow_feature':
-                    frames = resize_image(frames).contiguous()
-                with torch.no_grad():
-                    feature = model(frames)
-                    if extract_target == 'flow_feature':
-                        feature = feature.squeeze(-1).squeeze(-1)
+                    feature = process_flow_feature(model, frames)
+                else: 
+                    feature = process_rgb_feature(model, frames)
+
                 feature = feature.detach().cpu().numpy()
                 np.save(os.path.join(target_folder, name + '.npy'), feature)
             torch.cuda.empty_cache()
@@ -279,10 +300,20 @@ def main(extract_target='rgb_feature', phase='train'):
             target, name = data
             np.save(os.path.join(target_folder, name + '.npy'), target)
 
+
 if __name__ == '__main__':
-    phase = 'test'         # one of {train, test}
-    target = 'rgb_feature' # one of {rgb_feature, flow_feature, target}
-    main(extract_target=target, phase=phase)
+    test = False
+    phase = 'test'          # one of {train, test}
+    target = 'target'       # one of {rgb_feature, flow_feature, target}
+
+    if test is True:
+        cfg = load_cfg()
+        dataset = ExtractDataset(cfg, phase, target, GET_Transform(cfg))
+        rgb, name = dataset[2]
+        print(rgb.size(), name)
+
+    else:
+        main(extract_target=target, phase=phase)
 
       
 

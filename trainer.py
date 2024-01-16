@@ -8,20 +8,19 @@ from torch.utils.data import DataLoader
 
 from configure import load_cfg
 from model_builder import Lstr
-from dataset_builder import get_dataset
+from dataset_builder import LSTRDataLayer
 from criterions import get_criterion
 from scheduler_builder import get_scheduler
 from evaluation import compute_result
 from logger import setup_logger
 from checkpointer import setup_checkpointer
-from utils import (
-    resize_image, get_fusion_features, get_device, compute_features)
+from utils import get_device
 
 
 
 def build_dataloader(cfg, phase):
     data_loader = DataLoader(
-        dataset = get_dataset(cfg, phase),
+        dataset = LSTRDataLayer(cfg, phase),
         batch_size=cfg.DATA_LOADER.BATCH_SIZE,
         shuffle = True if phase == 'train' else False,
         num_workers = cfg.DATA_LOADER.NUM_WORKERS,
@@ -53,7 +52,6 @@ def get_optimizer(cfg, model):
 
 
 def train(cfg):
-    batch_size = cfg.DATA.BATCH_SIZE
     logger = setup_logger(cfg, 'train')
     print('logger loaded')
 
@@ -62,23 +60,23 @@ def train(cfg):
     
     data_loaders = {phase: build_dataloader(cfg, phase) for phase in cfg.SOLVER.PHASES}
        
-    model = Lstr(cfg) #get_model(cfg, pretrained='extractor')    # load weight of resnet and flownet
+    model = Lstr(cfg)   #get_model(cfg, pretrained='extractor')    # load weight of resnet and flownet
     
     criterion = get_criterion(cfg)
 
     device = get_device(cfg)        
     # device = 'cpu'
-
+    model = model.to(device)
     model.train(True)
 
-    optimizer = get_optimizer(cfg, model)
+    optimizer = get_optimizer(cfg, model.model)
     print('Optimizer Loaded')
 
     if cfg.SOLVER.RESUME is True:
-        ckpt_setter.load(models['lstr'], optimizer)     # here load lstr and optimizer checkpoint
+        ckpt_setter.load(model, optimizer)     # here load lstr and optimizer checkpoint
         print('Model and optimizer resumed')
                                                   
-    scheduler = get_scheduler(cfg, optimizer, datasets['train'].__len__())
+    scheduler = get_scheduler(cfg, optimizer, len(data_loaders['train']))
     print('Scheduler loaded')
 
     for epoch in range(cfg.SOLVER.START_EPOCH, cfg.SOLVER.START_EPOCH + cfg.SOLVER.NUM_EPOCHS):
@@ -95,13 +93,14 @@ def train(cfg):
 
                 pbar = tqdm(data_loaders[phase], desc=f'{phase} Epoch: {epoch}')
                 for idx, data in enumerate(pbar, start=1):
+                    batch_size = data[0].size(0)
                     det_target = data[-1].to(device)
 
                     det_score = model(*[x.to(device) for x in data[:-1]])
                     det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
                     det_target = det_target.reshape(-1, cfg.DATA.NUM_CLASSES)
                     det_loss = criterion['MCE'](det_score, det_target)
-                    det_losses[phase] += det_loss.item()
+                    det_losses[phase] += det_loss.item() * batch_size
 
                     pbar.set_postfix({
                         'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
@@ -144,11 +143,12 @@ def train(cfg):
         logger.info(' | '.join(log))
 
         # Save checkpoint for model and optimizer
-        ckpt_setter.save(epoch, model, optimizer)
+        ckpt_setter.save(epoch, model.model, optimizer)
 
         # Shuffle dataset for next epoch
         data_loaders['train'].dataset.shuffle()
 
-
-
+if __name__ == '__main__':
+    cfg = load_cfg()
+    train(cfg)
 

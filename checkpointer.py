@@ -8,11 +8,11 @@ class Checkpointer(object):
     def __init__(self, cfg, phase):
 
         # Load pretrained checkpoint
-        self.checkpoint = self._load_checkpoint(cfg.MODEL.CHECKPOINT)
+        self.checkpoint = self._load_checkpoint(cfg.MODEL.LSTR.CKPT)
         if self.checkpoint is not None and phase == 'train':
             cfg.SOLVER.START_EPOCH += self.checkpoint.get('epoch', 0)
         elif self.checkpoint is None and phase != 'train':
-            raise RuntimeError('Cannot find checkpoint {}'.format(cfg.MODEL.CHECKPOINT))
+            raise RuntimeError('Cannot find checkpoint {}'.format(cfg.MODEL.LSTR.CKPT))
 
         self.output_dir = cfg.OUTPUT_DIR
 
@@ -25,7 +25,7 @@ class Checkpointer(object):
     def save(self, epoch, model, optimizer):
         torch.save({
             'epoch': epoch,
-            'model_state_dict': model.module.state_dict() if torch.cuda.device_count() > 1 else model.state_dict(),
+            'model_state_dict': model.state_dict() if torch.cuda.device_count() > 1 else model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
         }, osp.join(self.output_dir, 'epoch-{}.pth'.format(epoch)))
 

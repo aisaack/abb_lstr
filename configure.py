@@ -20,7 +20,7 @@ class LSTR:
         self.ENC_MODULE = [[16, 1, True], [32, 2, True]]
         self.DEC_MODULE = [-1, 2, True]
         self.INFERENCE_MODE = 'batch'
-        self.CKPT = './checkpoints/lstr_th14_long_512_work_8_box.epoch-25.pth'
+        self.CKPT = None #'./checkpoints/lstr_th14_long_512_work_8_box.epoch-25.pth'
 
 
 class RESNET:
@@ -107,10 +107,12 @@ class DATA:
         self.DATA_NAME = 'THUMOS'
         self.DATA_INFO = './data/data_info.json'
         self.BASE_PATH = './dataset/thumos14'
-        self.VIDEO_PATH = 'validation'
-        self.VAL_META = self.VIDEO_PATH + '_meta/validation_set.mat'
-        self.TEST_META = self.VIDEO_PATH + '-meta/test_set.mat'
-        self.ANNOTATION = self.VIDEO_PATH + '_anno/'
+        self.TRAIN_PATH = 'validation'
+        self.TEST_PATH = 'test'
+        self.VAL_META = self.TRAIN_PATH + '_meta/validation_set.mat'
+        self.TEST_META = self.TEST_PATH + '_meta/test_set_meta.mat'
+        self.VAL_ANNOTATION = self.TRAIN_PATH + '_anno/'
+        self.TEST_ANNOTATION = self.TEST_PATH + '_anno/'
         self.CLASS_NAMES = None
         self.NUM_CLASSES = 22
         # assert len(self.CLASS_NAMES) == self.NUM_CLASSES
