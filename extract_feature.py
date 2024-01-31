@@ -86,7 +86,8 @@ class ExtractDataset(Dataset):
         rgbs = self.transform.process(rgbs)
         rgbs = rgbs['video']
 
-        if self.tar == 'rgb_feature':
+
+        if self.tar == 'rgb_kinetics_resnet50':
             return rgbs, video_file
 
         flows = self.get_flow_sample(video_cap)
@@ -96,7 +97,7 @@ class ExtractDataset(Dataset):
         # print('rgb size: ', rgbs.size())
         # print('flow size: ', flows.size())
         # print('target size: ', targets.size())
-        if self.tar == 'flow_feature':
+        if self.tar == 'flow_kinetics_bninception':
             return flows, video_file
 
         if self.tar == None:
@@ -124,13 +125,12 @@ class ExtractDataset(Dataset):
 
         for i, frame in enumerate(rgb_sam):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # print(type(frame), frame.dtype)
-            frame = frame / 255.
             rgb_sam[i] = frame
 
         rgbs = np.stack(rgb_sam, axis=0)
-        rgbs = torch.from_numpy(rgbs).type(torch.float32).permute(0, 3, 1, 2)
-        return rgbs
+        rgbs = torch.as_tensor(rgbs, dtype=torch.uint8)
+        rgbs = torch.permute(rgbs, (0, 3, 1, 2))
+        return rgbs / 255.
     
     def get_flow_sample(self, video_cap):
         flow_sam = self.get_first_last_frames(video_cap)
@@ -140,9 +140,10 @@ class ExtractDataset(Dataset):
             flow_sam[i] = frame
         
         flows = np.stack(flow_sam, axis=0)
-        flows = torch.from_numpy(flows).type(torch.float32).permute(0, 3, 1, 2)
-        flows = dict(video=flows)
-        return flows
+        flows = np.concatenate([flows[::2, ...], flows[1::2, ...]], axis=-1)
+        flows = torch.as_tensor(flows, dtype=torch.uint8)
+        flows = torch.permute(flows, (0, 3, 1, 2))
+        return flows / 255.
 
     
     def get_first_last_frames(self, video):
@@ -227,9 +228,9 @@ def process_rgb_feature(model, frame):
         feature = model(frame)
     return feature
 
-def main(extract_target='rgb_feature', phase='train'):
+def main(extract_target='rgb_kinetics_resnet50', phase='train'):
     """
-    extraction_target: one of {rgb_feature, flow_feature, target_feature}
+    extraction_target: one of {rgb_kinetics_resnet50, flow_kinetics_bninception, target}
     """
 
     print()
@@ -246,16 +247,16 @@ def main(extract_target='rgb_feature', phase='train'):
     device = get_device(cfg)
     # device = 'cpu'
 
-    if extract_target == 'rgb_feature':
+    if extract_target == 'rgb_kinetics_resnet50':
         model = Resnet(cfg)
         # model = DDP(model, device_ids=device_id, output_device=device_id)
-    elif extract_target == 'flow_feature':
+    elif extract_target == 'flow_kinetics_bninception':
         model = Flownet(cfg)
         # model = DDP(model, device_ids=deivce_id, output_device=device_id)
     elif extract_target == 'target':
         model = None
     else:
-        raise ValueError(f'{extract_target} is not defined. Choose one of [rgb_feature, flow_feature, target]')
+        raise ValueError(f'{extract_target} is not defined. Choose one of [rgb_kinetics_resnet50, flow_kinetics_bninception, target]')
     
     if model is not None:
         model.load_ckpt()
@@ -265,7 +266,7 @@ def main(extract_target='rgb_feature', phase='train'):
     dataset = ExtractDataset(cfg, phase, extract_target, GET_Transform(cfg))
     pbar = tqdm(dataset)
     for idx, data in enumerate(pbar):
-        
+        print('start')
         if data is None:
             continue
         if not extract_target == 'target':
@@ -276,7 +277,7 @@ def main(extract_target='rgb_feature', phase='train'):
                 for i, frame in enumerate(frame_chunks):
                     frame = frame.to(device)
 
-                    if extract_target == 'flow_feature':
+                    if extract_target == 'flow_kinetics_bninception':
                         feature = process_flow_feature(model, frame)
                     else:
                         feature = process_rgb_feature(model, frame)
@@ -290,8 +291,9 @@ def main(extract_target='rgb_feature', phase='train'):
             else:
                 frames = frames.to(device)
 
-                if extract_target == 'flow_feature':
+                if extract_target == 'flow_kinetics_bninception':
                     feature = process_flow_feature(model, frames)
+                    
                 else: 
                     feature = process_rgb_feature(model, frames)
 
@@ -306,8 +308,15 @@ def main(extract_target='rgb_feature', phase='train'):
 
 if __name__ == '__main__':
     test = False
-    phase = 'test'          # one of {train, test}
+    phase = 'train'          # one of {train, test}
     target = 'flow_feature'       # one of {rgb_feature, flow_feature, target}
+
+    if target == 'flow_feature':
+        target = 'flow_kinetics_bninception'
+    elif target == 'rgb_feature':
+        target = 'rgb_kinetics_resnet50'
+    elif target == 'target':
+        pass
 
     if test is True:
         cfg = load_cfg()

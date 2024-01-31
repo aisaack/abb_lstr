@@ -69,8 +69,8 @@ class MODEL:
 class INPUT:
     def __init__(self):
         self.MODALITY = 'twostream'
-        self.VISUAL_FEATURE = 'rgb_feature'
-        self.MOTION_FEATURE = 'flow_feature'
+        self.VISUAL_FEATURE = 'rgb_kinetics_resnet50'
+        self.MOTION_FEATURE = 'flow_kinetics_bninception'
         self.TARGET_PERFRAME = 'target'
 
 
