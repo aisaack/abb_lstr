@@ -16,7 +16,7 @@ from logger import setup_logger
 from checkpointer import setup_checkpointer
 from utils import get_device
 
-
+torch.set_float32_matmul_precision('high')
 
 def build_dataloader(cfg, phase):
     data_loader = DataLoader(
@@ -61,15 +61,15 @@ def train(cfg):
     data_loaders = {phase: build_dataloader(cfg, phase) for phase in cfg.SOLVER.PHASES}
        
     model = Lstr(cfg)   #get_model(cfg, pretrained='extractor')    # load weight of resnet and flownet
+    # model = torch.compile(model)
     
     criterion = get_criterion(cfg)
 
     device = get_device(cfg)        
     # device = 'cpu'
     model = model.to(device)
-    model.train(True)
 
-    optimizer = get_optimizer(cfg, model.model)
+    optimizer = get_optimizer(cfg, model)
     print('Optimizer Loaded')
 
     if cfg.SOLVER.RESUME is True:
@@ -87,11 +87,9 @@ def train(cfg):
         start = time.time()
         for phase in cfg.SOLVER.PHASES:
             training = phase == 'train'
-            model.train(training)
-
-            with torch.set_grad_enabled(training):
-
-                pbar = tqdm(data_loaders[phase], desc=f'{phase} Epoch: {epoch}')
+            if training is True:
+                model.train()
+                pbar = tqdm(data_loaders['train'], desc=f'{phase} Epoch: {epoch}')
                 for idx, data in enumerate(pbar, start=1):
                     batch_size = data[0].size(0)
                     det_target = data[-1].to(device)
@@ -107,12 +105,29 @@ def train(cfg):
                         'det_loss': '{:.5f}'.format(det_loss.item()),
                     })
 
-                    if training:
-                        optimizer.zero_grad()
-                        det_loss.backward()
-                        optimizer.step()
-                        scheduler.step()
-                    else:
+                
+                    optimizer.zero_grad()
+                    det_loss.backward()
+                    optimizer.step()
+                    scheduler.step()
+            else:
+                model.eval()
+                pbar = tqdm(data_loaders['test'], desc=f'{phase} Epoch: {epoch}')
+                for idx, data in enumerate(pbar, start=1):
+                    with torch.no_grad():
+                        batch_size = data[0].size(0)
+                        det_target = data[-1].to(device)
+
+                        det_score = model(*[x.to(device) for x in data[:-1]])
+                        det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
+                        det_target = det_target.reshape(-1, cfg.DATA.NUM_CLASSES)
+                        det_loss = criterion['MCE'](det_score, det_target)
+                        det_losses[phase] += det_loss.item() * batch_size
+
+                        pbar.set_postfix({
+                            'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
+                            'det_loss': '{:.5f}'.format(det_loss.item()),
+                        })
                         # Prepare for evaluation
                         det_score = det_score.softmax(dim=1).cpu().tolist()
                         det_target = det_target.cpu().tolist()
@@ -143,7 +158,7 @@ def train(cfg):
         logger.info(' | '.join(log))
 
         # Save checkpoint for model and optimizer
-        ckpt_setter.save(epoch, model.model, optimizer)
+        ckpt_setter.save(epoch, model, optimizer)
 
         # Shuffle dataset for next epoch
         data_loaders['train'].dataset.shuffle()

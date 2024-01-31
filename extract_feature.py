@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 import torch
 from torch.utils.data import Dataset
+from torchvision.transforms import ToTensor
 
 # from pytorchvideo.data.encoded_video import EncodedVideo
 
@@ -75,22 +76,21 @@ class ExtractDataset(Dataset):
         ditch = total_frames % self.sampling_rate
         if ditch != 0:
             video_cap = video_cap[:-ditch]
-        rgbs = self.get_rgb_sample(video_cap, int(total_frames / self.sampling_rate))
-        flows = self.get_flow_sample(video_cap)
+        rgbs = self.get_rgb_sample(video_cap, int(len(video_cap) / self.sampling_rate))
         targets = self.get_target_label(rgbs, start_end_indices, video_class)
 
         if self.tar == 'target':
             return targets, video_file
-         
+        
         rgbs = dict(video=rgbs)
-        rgbs = self.transform.rgb(rgbs)
+        rgbs = self.transform.process(rgbs)
         rgbs = rgbs['video']
 
         if self.tar == 'rgb_feature':
             return rgbs, video_file
 
-        flows = dict(video=flows)
-        flows = self.transform.rgb(flows)
+        flows = self.get_flow_sample(video_cap)
+        flows = self.transform.process(flows)
         flows = flows['video']
         flows = torch.cat([flows[::2, :, :, :], flows[1::2, :, :, :]], dim=1)
         # print('rgb size: ', rgbs.size())
@@ -124,12 +124,12 @@ class ExtractDataset(Dataset):
 
         for i, frame in enumerate(rgb_sam):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # print(type(frame), frame.dtype)
+            frame = frame / 255.
             rgb_sam[i] = frame
 
         rgbs = np.stack(rgb_sam, axis=0)
-        rgbs = torch.from_numpy(rgbs).type(torch.float32)
-        rgbs = rgbs.permute(0, 3, 1, 2)
-
+        rgbs = torch.from_numpy(rgbs).type(torch.float32).permute(0, 3, 1, 2)
         return rgbs
     
     def get_flow_sample(self, video_cap):
@@ -140,9 +140,8 @@ class ExtractDataset(Dataset):
             flow_sam[i] = frame
         
         flows = np.stack(flow_sam, axis=0)
-        flows = torch.from_numpy(flows).type(torch.float32)
-        flows = flows.permute(0, 3, 1, 2)
-
+        flows = torch.from_numpy(flows).type(torch.float32).permute(0, 3, 1, 2)
+        flows = dict(video=flows)
         return flows
 
     
@@ -183,13 +182,16 @@ class ExtractDataset(Dataset):
         return start_end_idx
     
     def get_target_label(self, video_frames, start_end_indices, video_class):
+        # print("target indices: ", start_end_indices)
         target_label = torch.zeros((len(video_frames), len(self.class_names)))
+        # print('target shape: ', target_label.size())
         class_id = self.class_names.index(video_class)
         for indices in start_end_indices:
             start, end = indices
-            start = start * (self.sampling_rate-1)
-            end = end * (self.sampling_rate-1)
-            target_label[int(start):int(end)+1, class_id] = 1
+            end_sample = int(end * self.sampling_rate - 1)
+            if int(end * 30) % 6 != 0:
+                end_sample += 1
+            target_label[int(start * self.sampling_rate):end_sample, class_id] = 1
         return target_label
     
     @staticmethod
@@ -242,27 +244,28 @@ def main(extract_target='rgb_feature', phase='train'):
         print(f'Create folder at {target_folder}')
 
     device = get_device(cfg)
+    # device = 'cpu'
 
     if extract_target == 'rgb_feature':
         model = Resnet(cfg)
-        model.load_ckpt()
         # model = DDP(model, device_ids=device_id, output_device=device_id)
     elif extract_target == 'flow_feature':
         model = Flownet(cfg)
-        model.load_ckpt()
         # model = DDP(model, device_ids=deivce_id, output_device=device_id)
     elif extract_target == 'target':
         model = None
     else:
         raise ValueError(f'{extract_target} is not defined. Choose one of [rgb_feature, flow_feature, target]')
-
+    
     if model is not None:
-        model = torch.nn.DataParallel(model)
+        model.load_ckpt()
+        model.eval()
         model = model.to(device)
-
+        model = torch.nn.DataParallel(model)
     dataset = ExtractDataset(cfg, phase, extract_target, GET_Transform(cfg))
     pbar = tqdm(dataset)
     for idx, data in enumerate(pbar):
+        
         if data is None:
             continue
         if not extract_target == 'target':
@@ -294,7 +297,7 @@ def main(extract_target='rgb_feature', phase='train'):
 
                 feature = feature.detach().cpu().numpy()
                 np.save(os.path.join(target_folder, name + '.npy'), feature)
-            torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
         
         elif extract_target == 'target':
             target, name = data
@@ -304,13 +307,13 @@ def main(extract_target='rgb_feature', phase='train'):
 if __name__ == '__main__':
     test = False
     phase = 'test'          # one of {train, test}
-    target = 'target'       # one of {rgb_feature, flow_feature, target}
+    target = 'flow_feature'       # one of {rgb_feature, flow_feature, target}
 
     if test is True:
         cfg = load_cfg()
         dataset = ExtractDataset(cfg, phase, target, GET_Transform(cfg))
-        rgb, name = dataset[2]
-        print(rgb.size(), name)
+        feature, name = dataset[2]
+        print(feature.size(), name)
 
     else:
         main(extract_target=target, phase=phase)

@@ -3,16 +3,10 @@ import cv2
 import numpy as np
 from pytorchvideo.transforms import (
     ApplyTransformToKey,
-    ShortSideScale,
-    UniformTemporalSubsample,
-    UniformCropVideo
+    Normalize
 )
 from torchvision.transforms import Compose, ToTensor, Normalize
 import torchvision.transforms.functional as F
-from torchvision.transforms._transforms_video import (
-    CenterCropVideo,
-    NormalizeVideo,
-)
 
 class SelectFirstAndLastFrames:
     '''
@@ -69,7 +63,7 @@ class GET_Transform:
     def __init__(self, cfg):
         self.cfg = cfg
         # self.flow = self.get_flow_transform()
-        self.rgb = self.get_rgb_transform()
+        self.process = self.get_rgb_transform()
         # print(self.cfg.DATA.MEAN)
 
 
@@ -78,10 +72,8 @@ class GET_Transform:
             key='video',
             transform = Compose(
                     [
-                        Normalize(self.cfg.DATA.MEAN, self.cfg.DATA.STD)
-                        # ShortSideScale(
-                        #     size=self.cfg.DATA.RGB_SIDE_SIZE
-                        # )
+                        Normalize(self.cfg.DATA.MEAN, self.cfg.DATA.STD),
+                        # ToTensor(),
                     ]
                 )
         )

@@ -36,6 +36,7 @@ class Lstr(nn.Module):
         print(self.cfg.MODEL.LSTR.CKPT)
         lstr_state_dict = torch.load(self.cfg.MODEL.LSTR.CKPT)
         self.model.load_state_dict(lstr_state_dict['model_state_dict'])
+        self.model.eval()
         print(f'  {self.model.__class__.__name__} resumed')
         
 

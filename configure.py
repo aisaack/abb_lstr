@@ -62,7 +62,7 @@ class MODEL:
         self.FLOWNET = COMBINED_FLOWNET()
         self.RESNET = RESNET()
         self.BN_INCEPTION = BN_INCEPTION()
-        self.CRITERIONS=[['MCE', {}]]
+        self.CRITERIONS = [['MCE', {}]]
         self.PRETRAINED = True
         
 
@@ -76,7 +76,7 @@ class INPUT:
 
 class DATA_LOADER:
     def __init__(self):
-        self.BATCH_SIZE = 512
+        self.BATCH_SIZE = 16
         self.NUM_WORKERS = 8
         self.PIN_MEMORY = True
 
@@ -87,7 +87,7 @@ class SCHEDULAR:
         self.WARMUP_FACTOR = 0.3
         self.WARMUP_EPOCHS = 10.0
         self.WARMUP_METHOD = 'linear'
-        self.GAMMA = 0.9
+        self.GAMMA = 0.1
 
 class SOLVER:
     def __init__(self):
@@ -122,10 +122,10 @@ class DATA:
         self.FPS = None
         self.TRAIN_SESSION_SET = None
         self.TEST_SESSION_SET = None
-        self.SAMPLING_RATE = 10
+        self.SAMPLING_RATE = 6
         self.NUM_FRAMES = 30
-        self.MEAN = [123.675, 116.28, 103.53]
-        self.STD = [58.395, 57.12, 57.375]
+        self.MEAN = [0.485, 0.456, 0.406] #[123.675, 116.28, 103.53]
+        self.STD = [0.229, 0.224, 0.225] #[58.395, 57.12, 57.375]
         
 
 class Config:
@@ -216,9 +216,9 @@ def assert_and_infer_cfg(cfg):
         cfg.OUTPUT_DIR = osp.join(cfg.OUTPUT_DIR, cfg.SESSION)  # What is it?
 
 def load_cfg():
-    args = parse_args()
+    # args = parse_args()
     cfg = Config()
-    args.config = './configs/lstr_long_512_work_8_kinetics_1x.yaml'
+    # args.config = './configs/lstr_long_512_work_8_kinetics_1x.yaml'
     assert_and_infer_cfg(cfg)
     return cfg
 

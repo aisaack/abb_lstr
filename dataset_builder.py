@@ -18,7 +18,7 @@ class LSTRDataLayer(data.Dataset):
         self.target_perframe = cfg.INPUT.TARGET_PERFRAME
         self.sessions = getattr(cfg.DATA, phase.upper() + '_SESSION_SET')       # list of file name
         if phase == 'test':
-            self.sessions.remove('video_test_0000270')                          # video_test_0000270 gives me Haircut class.
+            self.sessions.remove('video_test_0000270')                           # video_test_0000270 gives me Haircut class.
         self.long_memory_length = cfg.MODEL.LSTR.LONG_MEMORY_LENGTH
         self.long_memory_sample_rate = cfg.MODEL.LSTR.LONG_MEMORY_SAMPLE_RATE
         self.long_memory_num_samples = cfg.MODEL.LSTR.LONG_MEMORY_NUM_SAMPLES
@@ -218,3 +218,11 @@ class LSTRBatchInferenceDataLayer(data.Dataset):
 
     def __len__(self):
         return len(self.inputs)
+
+
+if __name__ == '__main__':
+    from configure import load_cfg
+
+    cfg = load_cfg()
+    dataset = LSTRDataLayer(cfg, 'train')
+    print(len(dataset))
