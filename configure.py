@@ -126,7 +126,7 @@ class DATA:
         self.TRAIN_SESSION_SET = None
         self.TEST_SESSION_SET = None
         self.SAMPLING_RATE = 6
-        self.NUM_FRAMES = 30
+        self.NUM_FRAMES = 24
         self.MEAN = [0.485, 0.456, 0.406] #[123.675, 116.28, 103.53]
         self.STD = [0.229, 0.224, 0.225] #[58.395, 57.12, 57.375]
         self.RGB_CHUNK_SIZE = 6

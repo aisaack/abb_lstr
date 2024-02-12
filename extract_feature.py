@@ -32,12 +32,11 @@ def resize_image(img, multiplier):
 
 
 class ExtractDataset(Dataset):
-    def __init__(self, cfg, size, phase='train', target=None):
+    def __init__(self, cfg, phase='train', target=None):
         self.cfg = cfg
         self.tar = target
-        self.size = size
         self.class_names = self.cfg.DATA.CLASS_NAMES
-        self.fps = cfg.DATA.NUM_FRAMES
+        self.fps = self.cfg.DATA.NUM_FRAMES
         self.rgb_chunk_size = cfg.DATA.RGB_CHUNK_SIZE
         self.flo_chunk_size = cfg.DATA.FLOW_CHUNK_SIZE
 
@@ -125,7 +124,7 @@ class ExtractDataset(Dataset):
         Sample 30 fps video into 24 fps video.
         """
         total_frames = len(video)
-        indices = np.linspace(0, total_frames - 1, round(total_frames / 30) * 24).astype(np.compat.long)
+        indices = np.linspace(0, total_frames - 1, round(total_frames / 30) * self.fps).astype(np.compat.long)
         indices = np.clip(indices, 0, total_frames - 1)
         return [video[i] for i in indices]
     
@@ -240,14 +239,24 @@ def process_rgb_feature(model, frame, div_size, device):
 
     
 
-def main(size, extract_target='rgb_kinetics_resnet50', phase='train'):
+def main(multiplier, extract_target='rgb_kinetics_resnet50', phase='train'):
     """
     extraction_target: one of {rgb_kinetics_resnet50, flow_kinetics_bninception, target}
     """
+    h, w = 180, 320
+    new_h = int(multiplier * h) + 1
+    new_w = int(multiplier * w) + 1
+    if new_h % 64 != 0:
+        remain = new_h % 64
+        new_h -= remain
+    
+    if new_w  % 64 != 0:
+        reamin = new_w % 64
+        new_w -= reamin
 
     cfg = load_cfg()
     print()
-    print(f'Start extracting {phase} dataset {extract_target} {size} sized video in {cfg.DATA.NUM_FRAMES} fps.')
+    print(f'Start extracting {phase} dataset {extract_target} {new_h, new_w} sized video in {cfg.DATA.NUM_FRAMES} fps.')
     print()
     key = 'validation' if phase == 'train' else 'test'
     video_path = f'./dataset/thumos14/{key}'
@@ -275,7 +284,7 @@ def main(size, extract_target='rgb_kinetics_resnet50', phase='train'):
         model.eval()
         model = model.to(device)
         model = torch.nn.DataParallel(model)
-    dataset = ExtractDataset(cfg, size, phase, extract_target)
+    dataset = ExtractDataset(cfg, phase, extract_target)
     pbar = tqdm(dataset)
     for idx, data in enumerate(pbar):
         if data is None:
@@ -284,9 +293,9 @@ def main(size, extract_target='rgb_kinetics_resnet50', phase='train'):
             frames, name = data
 
             if extract_target == 'rgb_kinetics_resnet50':
-                feature = process_rgb_feature(model, frames, 1.3, device)
+                feature = process_rgb_feature(model, frames, multiplier, device)
             elif extract_target == 'flow_kinetics_bninception':
-                feature = process_flow_feature(model, frames, 1.3, device)
+                feature = process_flow_feature(model, frames, multiplier, device)
 
             feature = feature.detach().cpu().numpy()
             np.save(os.path.join(target_folder, name + '.npy'), feature)
@@ -301,7 +310,7 @@ if __name__ == '__main__':
     test = False
     phase = 'train'          # one of {train, test}
     target = 'flow_feature'       # one of {rgb_feature, flow_feature, target}
-    size = (256, 256)
+    muliplier = 1.3
     # mult  resolution  hight/width
     # 1.3 > (192, 384): 0.5
     # 1.4 > (192, 448): 0.42
@@ -326,7 +335,7 @@ if __name__ == '__main__':
         # print(out.size(), name)
 
     else:
-        main(extract_target=target, phase=phase, size=size)
+        main(extract_target=target, phase=phase, multiplier=muliplier)
 
       
 
