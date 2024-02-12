@@ -16,7 +16,8 @@ from logger import setup_logger
 from checkpointer import setup_checkpointer
 from utils import get_device
 
-torch.set_float32_matmul_precision('high')
+# torch.set_float32_matmul_precision('high')
+# torch._inductor.config.fallback_random = True
 
 def build_dataloader(cfg, phase):
     data_loader = DataLoader(
@@ -68,6 +69,7 @@ def train(cfg):
     device = get_device(cfg)        
     # device = 'cpu'
     model = model.to(device)
+    # model = torch.compile(model)
 
     optimizer = get_optimizer(cfg, model)
     print('Optimizer Loaded')
@@ -88,9 +90,9 @@ def train(cfg):
         for phase in cfg.SOLVER.PHASES:
             training = phase == 'train'
             if training is True:
-                model.train()
-                pbar = tqdm(data_loaders['train'], desc=f'{phase} Epoch: {epoch}')
+                pbar = tqdm(data_loaders['train'], desc=f'train Epoch: {epoch}')
                 for idx, data in enumerate(pbar, start=1):
+                    model.train()   
                     batch_size = data[0].size(0)
                     det_target = data[-1].to(device)
 
@@ -104,27 +106,26 @@ def train(cfg):
                         'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
                         'det_loss': '{:.5f}'.format(det_loss.item()),
                     })
-
-                
-                    optimizer.zero_grad()
+                    optimizer.zero_grad()               
                     det_loss.backward()
                     optimizer.step()
                     scheduler.step()
+            
             else:
-                model.eval()
-                pbar = tqdm(data_loaders['test'], desc=f'{phase} Epoch: {epoch}')
-                for idx, data in enumerate(pbar, start=1):
+                test_pbar = tqdm(data_loaders['test'], desc=f'test Epoch: {epoch}')
+                for idx, test_data in enumerate(test_pbar, start=1):
+                    model.eval()
                     with torch.no_grad():
-                        batch_size = data[0].size(0)
-                        det_target = data[-1].to(device)
+                        batch_size = test_data[0].size(0)
+                        det_target = test_data[-1].to(device)
 
-                        det_score = model(*[x.to(device) for x in data[:-1]])
+                        det_score = model(*[x.to(device) for x in test_data[:-1]])
                         det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
                         det_target = det_target.reshape(-1, cfg.DATA.NUM_CLASSES)
                         det_loss = criterion['MCE'](det_score, det_target)
                         det_losses[phase] += det_loss.item() * batch_size
 
-                        pbar.set_postfix({
+                        test_pbar.set_postfix({
                             'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
                             'det_loss': '{:.5f}'.format(det_loss.item()),
                         })
@@ -133,6 +134,8 @@ def train(cfg):
                         det_target = det_target.cpu().tolist()
                         det_pred_scores.extend(det_score)
                         det_gt_targets.extend(det_target)
+
+            # scheduler.step()
         
         end = time.time()
 

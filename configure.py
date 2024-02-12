@@ -9,7 +9,7 @@ class LSTR:
         self.IS_STREAM = False
         self.NUM_HEADS = 16
         self.DIM_FEEDFORWARD = 1024
-        self.DROPOUT = 0.2
+        self.DROPOUT = 0.25
         self.ACTIVATION = 'relu'
         self.AGES_MEMORY_SECONDS = 0
         self.AGES_MEMORY_SAMPLE_RATE = 1
@@ -20,7 +20,8 @@ class LSTR:
         self.ENC_MODULE = [[16, 1, True], [32, 2, True]]
         self.DEC_MODULE = [-1, 2, True]
         self.INFERENCE_MODE = 'batch'
-        self.CKPT = None #'./checkpoints/lstr_th14_long_512_work_8_box.epoch-25.pth'
+        self.CKPT = './checkpoints/lstr_distil/' #'./checkpoints/lstr_th14_long_512_work_8_box.epoch-25.pth'
+        self.WEIGHT = './checkpoints/lstr_distil/epoch-29.pth'
 
 
 class RESNET:
@@ -64,6 +65,7 @@ class MODEL:
         self.BN_INCEPTION = BN_INCEPTION()
         self.CRITERIONS = [['MCE', {}]]
         self.PRETRAINED = True
+        self.CHECKPOINT = './checkpoints/lstr_distil/pred_score.pkl'
         
 
 class INPUT:
@@ -72,6 +74,7 @@ class INPUT:
         self.VISUAL_FEATURE = 'rgb_kinetics_resnet50'
         self.MOTION_FEATURE = 'flow_kinetics_bninception'
         self.TARGET_PERFRAME = 'target'
+        
 
 
 class DATA_LOADER:
@@ -84,19 +87,19 @@ class DATA_LOADER:
 class SCHEDULAR:
     def __init__(self):
         self.SCHEDULER_NAME = 'warmup_cosine'
-        self.WARMUP_FACTOR = 0.3
-        self.WARMUP_EPOCHS = 10.0
+        self.WARMUP_FACTOR = 0.32
+        self.WARMUP_EPOCHS = 12.0
         self.WARMUP_METHOD = 'linear'
-        self.GAMMA = 0.1
+        self.GAMMA = 0.3
 
 class SOLVER:
     def __init__(self):
-        self.NUM_EPOCHS = 50
+        self.NUM_EPOCHS = 30
         self.OPTIMIZER = 'adam'
-        self.BASE_LR = 7e-05
-        self.WEIGHT_DECAY = 5e-05
+        self.BASE_LR = 2.3e-04
+        self.WEIGHT_DECAY = 4e-04
         self.SCHEDULER = SCHEDULAR()
-        self.MOMENTUM = None            # for sgd
+        self.MOMENTUM = 0.9            # for sgd
         self.PHASES = ['train', 'test']
         self.START_EPOCH = 1
         self.RESUME = False
@@ -109,9 +112,9 @@ class DATA:
         self.BASE_PATH = './dataset/thumos14'
         self.TRAIN_PATH = 'validation'
         self.TEST_PATH = 'test'
-        self.VAL_META = self.TRAIN_PATH + '_meta/validation_set.mat'
+        self.VALIDATION_META = self.TRAIN_PATH + '_meta/validation_set.mat'
         self.TEST_META = self.TEST_PATH + '_meta/test_set_meta.mat'
-        self.VAL_ANNOTATION = self.TRAIN_PATH + '_anno/'
+        self.VALIDATION_ANNOTATION = self.TRAIN_PATH + '_anno/'
         self.TEST_ANNOTATION = self.TEST_PATH + '_anno/'
         self.CLASS_NAMES = None
         self.NUM_CLASSES = 22
@@ -126,6 +129,8 @@ class DATA:
         self.NUM_FRAMES = 30
         self.MEAN = [0.485, 0.456, 0.406] #[123.675, 116.28, 103.53]
         self.STD = [0.229, 0.224, 0.225] #[58.395, 57.12, 57.375]
+        self.RGB_CHUNK_SIZE = 6
+        self.FLOW_CHUNK_SIZE = 6
         
 
 class Config:

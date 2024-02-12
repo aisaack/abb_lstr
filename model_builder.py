@@ -33,8 +33,8 @@ class Lstr(nn.Module):
         initiate each model's pretrained weight
             self.cfg has each module's pre-trained weight path
         '''
-        print(self.cfg.MODEL.LSTR.CKPT)
-        lstr_state_dict = torch.load(self.cfg.MODEL.LSTR.CKPT)
+        print(self.cfg.MODEL.LSTR.WEIGHT)
+        lstr_state_dict = torch.load(self.cfg.MODEL.LSTR.WEIGHT)
         self.model.load_state_dict(lstr_state_dict['model_state_dict'])
         self.model.eval()
         print(f'  {self.model.__class__.__name__} resumed')
@@ -119,13 +119,31 @@ def get_model(cfg, pretrained=None):
 
 if __name__ == '__main__':
     from configure import load_cfg
+    from models.feature_models.flownet import FastFlowNet
+    from models.feature_models.bn_inception import BNInception
+
+
     cfg= load_cfg()
 
-    rgb = torch.randn(50, 3, 180, 320)
-    flow = torch.randn(50, 6, 256, 384)
-    models = get_model(cfg)
+    # rgb = torch.randn(50, 3, 180, 320)
+    # flow = torch.randn(50, 6, 256, 384)
+    # models = get_model(cfg)
 
-    rgb_feat = models.get('resnet')(rgb)        # [frame, 2048]
-    flow_feat = models.get('flownet')(flow)     # [frame, 1024]
-    print(rgb_feat.size(), flow_feat.size())
+    # rgb_feat = models.get('resnet')(rgb)        # [frame, 2048]
+    # flow_feat = models.get('flownet')(flow)     # [frame, 1024]
+    # print(rgb_feat.size(), flow_feat.size())
     
+    flowmodel = FastFlowNet()
+    bninception = BNInception(10)
+    avg_pool = nn.AdaptiveAvgPool2d(1)
+    img = torch.randn(2240, 6, 256, 256)
+    feats = []
+    with torch.no_grad():
+        feat = flowmodel(img)
+        feat = feat.view(2240 // 5, 10, feat.size(2), feat.size(3))
+        feat = bninception(feat)
+        feat = avg_pool(feat)
+
+    print(feat.size())
+
+

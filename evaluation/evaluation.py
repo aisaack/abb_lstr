@@ -3,7 +3,6 @@ from .metrics import perframe_average_precision
 from .metrics import perstage_average_precision
 
 
-
 def eval_perframe(cfg, ground_truth, prediction, **kwargs):
     class_names = kwargs.get('class_names', cfg.DATA.CLASS_NAMES)
     ignore_index = kwargs.get('ignore_index', cfg.DATA.IGNORE_INDEX)
@@ -33,5 +32,5 @@ def eval_perstage(cfg, ground_truth, prediction, **kwargs):
         postprocessing=postprocessing,
     )
 
-compute_result = dict(perframe=eval_perframe,
-                      perstage=eval_perstage)
+compute_result = dict(
+    perframe=eval_perframe, perstage=eval_perstage)

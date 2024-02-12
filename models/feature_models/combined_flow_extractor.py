@@ -18,7 +18,16 @@ class CombinedFlowModel(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
     
     def forward(self, x):
-        x = self.flow_extractor(x) # (B, 2, height, width)
+        x = self.flow_extractor(x)
+        print(x.size())
+        x = x.view(x.size(0) // 5, self.cfg.BN_INCEPTION.IN_CHANNELS, x.size(2), x.size(3))
+        x = self.bn_inception(x)
+        x = self.avg_pool(x)
+        return x.unsqueeze(-1).unsqueeze(-1)
+
+
+
+        x = self.flow_extractor(x) # (num_frames, 6, height, width)
         # copy the flow channels to match the input of BNInception
         x = torch.cat([x, x, x, x, x], dim=1)
         #Should be (x,y,x,y,x,y,x,y,x,y,x,y)

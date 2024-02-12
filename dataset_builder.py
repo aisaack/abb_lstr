@@ -126,11 +126,12 @@ class LSTRDataLayer(data.Dataset):
 class LSTRBatchInferenceDataLayer(data.Dataset):
 
     def __init__(self, cfg, phase='test'):
-        self.data_root = cfg.DATA.DATA_ROOT
+        self.data_root = cfg.DATA.BASE_PATH
         self.visual_feature = cfg.INPUT.VISUAL_FEATURE
         self.motion_feature = cfg.INPUT.MOTION_FEATURE
         self.target_perframe = cfg.INPUT.TARGET_PERFRAME
         self.sessions = getattr(cfg.DATA, phase.upper() + '_SESSION_SET')
+        self.sessions.remove('video_test_0000270')
         self.long_memory_length = cfg.MODEL.LSTR.LONG_MEMORY_LENGTH
         self.long_memory_sample_rate = cfg.MODEL.LSTR.LONG_MEMORY_SAMPLE_RATE
         self.long_memory_num_samples = cfg.MODEL.LSTR.LONG_MEMORY_NUM_SAMPLES

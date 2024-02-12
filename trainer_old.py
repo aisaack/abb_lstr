@@ -136,30 +136,32 @@ def train(cfg):
         start = time.time()
         for phase in cfg.SOLVER.PHASES:
             training = phase == 'train'
-            models['lstr'].train(training)
+            models['lstr'].train()
 
-            pbar = tqdm(datasets[phase], desc=f'{phase}  Epoch: {epoch}')
-            for idx, (rgb, flow, target) in enumerate(pbar, start=1):
-                
-                rgb = rgb.to(device)                        # [frame, 3, 180, 320]
-                flow = flow.to(device)                      # [frame, 6, 180, 320]
-                target = target.to(device)                  # [frame, num_class]
-                flow = resize_image(flow).contiguous()      # [frame, 6, 256, 384]
+            if training is True:
 
-                rgb_feature, flow_feature, helpers = compute_features(
-                    rgb, flow, target, models, cfg.MODEL.LSTR.WORK_MEMORY_LENGTH, train_extractor=False)
-                empty_mem(*[rgb, flow, target])
-                
-                fusion_features = get_fusion_features(cfg, rgb_feature, flow_feature, helpers)    # [[fusion_rgbs * len(helper)], [fusion_flows * len(helper)], [masks * len(helper], [targets * len(helper]]
-                empty_mem(*[rgb_feature, flow_feature, helpers])
+                pbar = tqdm(datasets[phase], desc=f'{phase}  Epoch: {epoch}')
+                for idx, (rgb, flow, target) in enumerate(pbar, start=1):
+                    
+                    rgb = rgb.to(device)                        # [frame, 3, 180, 320]
+                    flow = flow.to(device)                      # [frame, 6, 180, 320]
+                    target = target.to(device)                  # [frame, num_class]
+                    flow = resize_image(flow).contiguous()      # [frame, 6, 256, 384]
 
-                batch_stream = dispatcher(fusion_features)
-                if batch_stream is None:
-                    continue
-                else:
-                    batch_stream = [torch.stack(stream, dim=0) for stream in batch_stream]
+                    rgb_feature, flow_feature, helpers = compute_features(
+                        rgb, flow, target, models, cfg.MODEL.LSTR.WORK_MEMORY_LENGTH, train_extractor=False)
+                    empty_mem(*[rgb, flow, target])
+                    
+                    fusion_features = get_fusion_features(cfg, rgb_feature, flow_feature, helpers)    # [[fusion_rgbs * len(helper)], [fusion_flows * len(helper)], [masks * len(helper], [targets * len(helper]]
+                    empty_mem(*[rgb_feature, flow_feature, helpers])
 
-                    with torch.set_grad_enabled(training):
+                    batch_stream = dispatcher(fusion_features)
+                    if batch_stream is None:
+                        continue
+                    else:
+                        batch_stream = [torch.stack(stream, dim=0) for stream in batch_stream]
+
+                        
                         det_score = models['lstr'](*[stream.to(device) for stream in batch_stream[:-1]])
                         det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
                         det_target = batch_stream[-1].reshape(-1, cfg.DATA.NUM_CLASSES)
@@ -170,18 +172,25 @@ def train(cfg):
                             'lr': '{:.7f}'.format(scheduler.get_last_lr()[0]),
                             'det_loss': '{:.5f}'.format(det_loss.item()),
                             })
-                    
-                        if training:
-                            optimizer.zero_grad()
-                            det_loss.backward()
-                            optimizer.step()
-                            scheduler.step()
+                        
+                            
+                        optimizer.zero_grad()
+                        det_loss.backward()
+                        optimizer.step()
+                        scheduler.step()
 
-                        else:
-                            det_score = det_score.softmax(dim=-1).cpu().tolist()
-                            det_target = det_target.cpu().tolist()
-                            det_pred_scores.extend(det_score)
-                            det_gt_targets.extend(det_target)
+            else:
+                with torch.no_grad():
+                    det_score = models['lstr'](*[stream.to(device) for stream in batch_stream[:-1]])
+                    det_score = det_score.reshape(-1, cfg.DATA.NUM_CLASSES)
+                    det_target = batch_stream[-1].reshape(-1, cfg.DATA.NUM_CLASSES)
+                    det_loss = criterion['MCE'](det_score, det_target)
+                    det_losses[phase] += det_loss.item() * batch_size
+
+                det_score = det_score.softmax(dim=-1).cpu().tolist()
+                det_target = det_target.cpu().tolist()
+                det_pred_scores.extend(det_score)
+                det_gt_targets.extend(det_target)
                 torch.cuda.empty.cache()
                 # for test
                 # if idx > 0:

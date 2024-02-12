@@ -5,22 +5,41 @@ from scipy import io    # for extract video annotation
 from tqdm import tqdm
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
-from torchvision.transforms import ToTensor
 
 # from pytorchvideo.data.encoded_video import EncodedVideo
 
-from transforms import GET_Transform
+from transforms import preprocess
 from configure import load_cfg
 from model_builder import Resnet, Flownet
-from utils import resize_image, get_device
+from utils import get_device
+
+
+def resize_image(img, multiplier):
+    h, w = img.shape[2:]
+    new_h = int(multiplier * h) + 1
+    new_w = int(multiplier * w) + 1
+    if new_h % 64 != 0:
+        remain = new_h % 64
+        new_h -= remain
+    
+    if new_w  % 64 != 0:
+        reamin = new_w % 64
+        new_w -= reamin
+
+    return F.interpolate(img, size=(new_h, new_w), mode='bilinear', align_corners=False)
 
 
 class ExtractDataset(Dataset):
-    def __init__(self, cfg, phase='train', target=None, transform=None):
+    def __init__(self, cfg, size, phase='train', target=None):
         self.cfg = cfg
         self.tar = target
+        self.size = size
         self.class_names = self.cfg.DATA.CLASS_NAMES
+        self.fps = cfg.DATA.NUM_FRAMES
+        self.rgb_chunk_size = cfg.DATA.RGB_CHUNK_SIZE
+        self.flo_chunk_size = cfg.DATA.FLOW_CHUNK_SIZE
 
         def get_meta_file(meta_path, phase):
             key = 'validation' if phase == 'train' else 'test'
@@ -28,10 +47,10 @@ class ExtractDataset(Dataset):
         
         if phase == 'train':
             self.video_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.TRAIN_PATH)
-            self.meta_file = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_META)
-            self.anno_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_ANNOTATION)
+            self.meta_file = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VALIDATION_META)
+            self.anno_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VALIDATION_ANNOTATION)
             self.file_list = self.cfg.DATA.TRAIN_SESSION_SET
-            meta_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VAL_META)
+            meta_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VALIDATION_META)
             
 
         elif phase == 'test':
@@ -50,113 +69,94 @@ class ExtractDataset(Dataset):
 
         self.meta_file = get_meta_file(meta_path, phase)
         self.sampling_rate = self.cfg.DATA.SAMPLING_RATE    # 6
-        self.transform = transform
         self.phase = phase
 
     def __getitem__(self, idx):
         video_file = self.file_list[idx]
         path2file = os.path.join(self.video_path, video_file + '.mp4')
-        video_class = self.get_vid_cls(video_file)
-
-        start_end_indices = self.get_action_duration(video_class, video_file)
-        # print(video_file, video_class, starts, ends)
-    
+         
         cap = cv2.VideoCapture(path2file)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        # total_duration = self.get_video_duration(cap, total_frames)
-
-        video_cap = list()
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            video_cap.append(frame)
-        cap.release()
-
-        ditch = total_frames % self.sampling_rate
-        if ditch != 0:
-            video_cap = video_cap[:-ditch]
-        rgbs = self.get_rgb_sample(video_cap, int(len(video_cap) / self.sampling_rate))
-        targets = self.get_target_label(rgbs, start_end_indices, video_class)
-
-        if self.tar == 'target':
-            return targets, video_file
-        
-        rgbs = dict(video=rgbs)
-        rgbs = self.transform.process(rgbs)
-        rgbs = rgbs['video']
-
+        video_cap = self.extract_frames(cap)
+        video_cap = self.uniform_temporal_subsample(video_cap)
 
         if self.tar == 'rgb_kinetics_resnet50':
+            rgbs = self.get_rgb_sample(video_cap)
+            rgbs = dict(video=rgbs)
+            rgbs = preprocess(self.cfg, self.tar)(rgbs)
+            rgbs = rgbs.get('video')
+            cap.release()
             return rgbs, video_file
-
-        flows = self.get_flow_sample(video_cap)
-        flows = self.transform.process(flows)
-        flows = flows['video']
-        flows = torch.cat([flows[::2, :, :, :], flows[1::2, :, :, :]], dim=1)
-        # print('rgb size: ', rgbs.size())
-        # print('flow size: ', flows.size())
-        # print('target size: ', targets.size())
+        
         if self.tar == 'flow_kinetics_bninception':
+            flows = self.get_flow_sample(video_cap)
+            flows = dict(video=flows)
+            flows = preprocess(self.cfg, self.tar)(flows)
+            flows = flows.get('video')
+            cap.release()
             return flows, video_file
+        
+        if self.tar == 'target':
+            rgbs = self.get_rgb_sample(video_cap)
+            video_class = self.get_vid_cls(video_file)
+            start_end_indices = self.get_action_duration(video_class, video_file)
+            # rgbs = self.get_rgb_sample(video_cap, int(total_frames / self.sampling_rate))
+            targets = self.get_target_label(rgbs, start_end_indices, video_class)
+            cap.release()
+            return targets, video_file
 
         if self.tar == None:
             return rgbs, flows, targets, video_file
-        
-
-    
+            
     def __len__(self):
         return len(self.file_list)
     
-    def get_video_duration(self, cap, total_frames):
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        duration = total_frames / fps
-        cap.release()
-        return duration
+    def extract_frames(self, caputure):
+        video_cap = list()
+        while True:
+            ret, frame = caputure.read()
+            if not ret:
+                break
+            video_cap.append(frame)
+        return video_cap
     
-    def uniform_temporal_subsample(self, video, num_frames):
+
+    def uniform_temporal_subsample(self, video):
+        """
+        Sample 30 fps video into 24 fps video.
+        """
         total_frames = len(video)
-        indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+        indices = np.linspace(0, total_frames - 1, round(total_frames / 30) * 24).astype(np.compat.long)
+        indices = np.clip(indices, 0, total_frames - 1)
         return [video[i] for i in indices]
     
 
-    def get_rgb_sample(self, video_cap, num_rgb_sample):
-        rgb_sam = self.uniform_temporal_subsample(video_cap, num_rgb_sample)
-
-        for i, frame in enumerate(rgb_sam):
+    def get_rgb_sample(self, sampled_frame):
+        indices = np.arange(2, len(sampled_frame), self.rgb_chunk_size)
+        sampled_frame = [sampled_frame[idx] for idx in indices]
+        for i, frame in enumerate(sampled_frame):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb_sam[i] = frame
+            sampled_frame[i] = frame
 
-        rgbs = np.stack(rgb_sam, axis=0)
+        rgbs = np.stack(sampled_frame, axis=0)
         rgbs = torch.as_tensor(rgbs, dtype=torch.uint8)
         rgbs = torch.permute(rgbs, (0, 3, 1, 2))
         return rgbs / 255.
     
-    def get_flow_sample(self, video_cap):
-        flow_sam = self.get_first_last_frames(video_cap)
+    def get_flow_sample(self, sampled_frame):
+        total_frames = len(sampled_frame)
+        ignore_idx = np.arange(5, total_frames-1, self.flo_chunk_size)
 
-        for i, frame in enumerate(flow_sam):
+        for i, frame in enumerate(sampled_frame):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            flow_sam[i] = frame
+            sampled_frame[i] = frame
         
-        flows = np.stack(flow_sam, axis=0)
-        flows = np.concatenate([flows[::2, ...], flows[1::2, ...]], axis=-1)
+        flows = np.stack(sampled_frame, axis=0)
+        flows = np.concatenate([flows[:-1, ...], flows[1:, ...]], axis=-1)
+        flows = np.delete(flows, ignore_idx, axis=0)
         flows = torch.as_tensor(flows, dtype=torch.uint8)
         flows = torch.permute(flows, (0, 3, 1, 2))
         return flows / 255.
 
-    
-    def get_first_last_frames(self, video):
-        num_frames = len(video)
-        def get_first_last_frames_indices(num_frames):
-            indices = []
-            for i in range(0, num_frames, self.sampling_rate):
-                indices.append(i)
-                indices.append(i+self.sampling_rate-1)
-            return np.clip(np.array(indices, dtype=np.int_), 0, num_frames-1)
-        indices = get_first_last_frames_indices(num_frames)        
-        return [video[i] for i in indices]
-    
     def get_vid_cls(self, vid_name):
         for meta in self.meta_file:
             if meta[0] == vid_name:
@@ -183,60 +183,72 @@ class ExtractDataset(Dataset):
         return start_end_idx
     
     def get_target_label(self, video_frames, start_end_indices, video_class):
-        # print("target indices: ", start_end_indices)
         target_label = torch.zeros((len(video_frames), len(self.class_names)))
-        # print('target shape: ', target_label.size())
         class_id = self.class_names.index(video_class)
         for indices in start_end_indices:
             start, end = indices
-            end_sample = int(end * self.sampling_rate - 1)
-            if int(end * 30) % 6 != 0:
-                end_sample += 1
-            target_label[int(start * self.sampling_rate):end_sample, class_id] = 1
+            multiplyer = self.fps / self.sampling_rate
+            frame_start, frame_end = int(start * multiplyer), int(end * multiplyer)
+            target_label[frame_start:frame_end, class_id] = 1
         return target_label
-    
-    @staticmethod
-    def get_video_duration(video_path):
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps
-        return duration
 
-    @staticmethod
-    def uniform_temporal_subsample(video, num_frames):
-        total_frames = len(video)
-        indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-        return [video[i] for i in indices]
-
-
-def chunk_frames(frames):
-    num_chunk = frames.size(0) // 840
+def chunk_frames(frames, chunk_size):
+    num_chunk = frames.size(0) // chunk_size
     if num_chunk == 0:
         return frames
     return frames.chunk(num_chunk, dim=0)
 
-def process_flow_feature(model, frame):
-    frame = resize_image(frame).contiguous()
-    with torch.no_grad():
-        feature = model(frame)
-        feature = feature.squeeze(-1).squeeze(-1)
-    return feature
+def process_flow_feature(model, frame, div_size, device):
+    frame = resize_image(frame, div_size)
+    if frame.size(0) > 840:
+        frame_chunks = chunk_frames(frame, 840)
+        frame_chunks = list(frame_chunks)
+        for idx, chunk in enumerate(frame_chunks):
+            chunk = chunk.to(device)
+            with torch.no_grad():
+                feature = model(chunk.contiguous())
+                del chunk
+            frame_chunks[idx] = feature
+            
+        return frame_chunks
+    
+    else:
+        frame = frame.to(device)
+        with torch.no_grad():
+            feature = model(frame)
+        return feature
 
-def process_rgb_feature(model, frame):
-    with torch.no_grad():
-        feature = model(frame)
-    return feature
+def process_rgb_feature(model, frame, div_size, device):
+    frame = resize_image(frame, div_size)
+    if frame.size(0) > 840:
+        frame_chunks = chunk_frames(frame, 840)
+        frame_chunks = list(frame_chunks)
+        for idx, chunk in enumerate(frame_chunks):
+            chunk = chunk.to(device)
+            with torch.no_grad():
+                feature = model(chunk)
+                del chunk
+            frame_chunks[idx] = feature
+            
+        return frame_chunks
+    
+    else:
+        frame = frame.to(device)
+        with torch.no_grad():
+            feature = model(frame)
+        return feature
 
-def main(extract_target='rgb_kinetics_resnet50', phase='train'):
+    
+
+def main(size, extract_target='rgb_kinetics_resnet50', phase='train'):
     """
     extraction_target: one of {rgb_kinetics_resnet50, flow_kinetics_bninception, target}
     """
 
-    print()
-    print(f'Start extracting {phase} dataset {extract_target}.')
-    print()
     cfg = load_cfg()
+    print()
+    print(f'Start extracting {phase} dataset {extract_target} {size} sized video in {cfg.DATA.NUM_FRAMES} fps.')
+    print()
     key = 'validation' if phase == 'train' else 'test'
     video_path = f'./dataset/thumos14/{key}'
     target_folder = video_path.replace(key, extract_target)
@@ -263,43 +275,22 @@ def main(extract_target='rgb_kinetics_resnet50', phase='train'):
         model.eval()
         model = model.to(device)
         model = torch.nn.DataParallel(model)
-    dataset = ExtractDataset(cfg, phase, extract_target, GET_Transform(cfg))
+    dataset = ExtractDataset(cfg, size, phase, extract_target)
     pbar = tqdm(dataset)
     for idx, data in enumerate(pbar):
-        print('start')
         if data is None:
             continue
         if not extract_target == 'target':
             frames, name = data
-            if frames.size(0) > 840:
-                frame_chunks = chunk_frames(frames)      # returns tuple of chunks of frame.
-                frame_chunks = list(frame_chunks)
-                for i, frame in enumerate(frame_chunks):
-                    frame = frame.to(device)
 
-                    if extract_target == 'flow_kinetics_bninception':
-                        feature = process_flow_feature(model, frame)
-                    else:
-                        feature = process_rgb_feature(model, frame)
+            if extract_target == 'rgb_kinetics_resnet50':
+                feature = process_rgb_feature(model, frames, 1.3, device)
+            elif extract_target == 'flow_kinetics_bninception':
+                feature = process_flow_feature(model, frames, 1.3, device)
 
-                    frame_chunks[i] = feature
-                    del feature, frame
-                frame_chunks = torch.cat(frame_chunks, dim=0).detach().cpu().numpy()
-                np.save(os.path.join(target_folder, name + '.npy'), frame_chunks)
-
-
-            else:
-                frames = frames.to(device)
-
-                if extract_target == 'flow_kinetics_bninception':
-                    feature = process_flow_feature(model, frames)
-                    
-                else: 
-                    feature = process_rgb_feature(model, frames)
-
-                feature = feature.detach().cpu().numpy()
-                np.save(os.path.join(target_folder, name + '.npy'), feature)
-                torch.cuda.empty_cache()
+            feature = feature.detach().cpu().numpy()
+            np.save(os.path.join(target_folder, name + '.npy'), feature)
+            torch.cuda.empty_cache()
         
         elif extract_target == 'target':
             target, name = data
@@ -310,6 +301,11 @@ if __name__ == '__main__':
     test = False
     phase = 'train'          # one of {train, test}
     target = 'flow_feature'       # one of {rgb_feature, flow_feature, target}
+    size = (256, 256)
+    # mult  resolution  hight/width
+    # 1.3 > (192, 384): 0.5
+    # 1.4 > (192, 448): 0.42
+    # 1.5 > (256, 448): 0.57    OOM happens when extracting flow feature with this.
 
     if target == 'flow_feature':
         target = 'flow_kinetics_bninception'
@@ -317,15 +313,20 @@ if __name__ == '__main__':
         target = 'rgb_kinetics_resnet50'
     elif target == 'target':
         pass
+    else:
+        raise ValueError('Undefined.')
 
     if test is True:
         cfg = load_cfg()
-        dataset = ExtractDataset(cfg, phase, target, GET_Transform(cfg))
-        feature, name = dataset[2]
+        dataset = ExtractDataset(cfg, size, phase, target)
+        feature, name = dataset[3]
         print(feature.size(), name)
+        # model = Flownet(cfg)
+        # out = model(feature.unsqueeze(0))
+        # print(out.size(), name)
 
     else:
-        main(extract_target=target, phase=phase)
+        main(extract_target=target, phase=phase, size=size)
 
       
 

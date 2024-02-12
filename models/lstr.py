@@ -8,19 +8,74 @@ from . import transformer as tr
 
 
 
-class FeatureHead(nn.Module):
+# class FeatureHead(nn.Module):
 
-    def __init__(self):
-        super().__init__()
-        self.input_linear = nn.Sequential(
-            nn.Linear(1024+2048, 1024),
-            nn.ReLU(inplace=True),
-        )
-        self.d_model = 1024
+#     def __init__(self):
+#         super().__init__()
+#         self.input_linear = nn.Sequential(
+#             nn.Linear(1024+2048, 1024),
+#             nn.ReLU(inplace=True),
+#         )
+#         self.d_model = 1024
 
+
+#     def forward(self, visual_input, motion_input):
+#         fusion_input = torch.cat((visual_input, motion_input), dim=-1)
+#         fusion_input = self.input_linear(fusion_input)
+#         return fusion_input
+
+
+FEATURE_SIZES = {
+    'rgb_anet_resnet50': 2048,
+    'flow_anet_resnet50': 2048,
+    'rgb_kinetics_bninception': 1024,
+    'flow_kinetics_bninception': 1024,
+    'rgb_kinetics_resnet50': 2048,
+    'flow_kinetics_resnet50': 2048,
+}
+
+
+class BaseFeatureHead(nn.Module):
+
+    def __init__(self, cfg):
+        super(BaseFeatureHead, self).__init__()
+
+        if cfg.INPUT.MODALITY in ['visual', 'motion', 'twostream']:
+            self.with_visual = 'motion' not in cfg.INPUT.MODALITY
+            self.with_motion = 'visual' not in cfg.INPUT.MODALITY
+        else:
+            raise RuntimeError('Unknown modality of {}'.format(cfg.INPUT.MODALITY))
+        
+        print(self.with_visual, self.with_motion)
+
+        if self.with_visual and self.with_motion:
+            visual_size = FEATURE_SIZES[cfg.INPUT.VISUAL_FEATURE]
+            motion_size = FEATURE_SIZES[cfg.INPUT.MOTION_FEATURE]
+            fusion_size = visual_size + motion_size
+        elif self.with_visual:
+            fusion_size = FEATURE_SIZES[cfg.INPUT.VISUAL_FEATURE]
+        elif self.with_motion:
+            fusion_size = FEATURE_SIZES[cfg.INPUT.MOTION_FEATURE]
+
+        self.d_model = fusion_size
+
+        if cfg.MODEL.FEATURE_HEAD.LINEAR_ENABLED:
+            if cfg.MODEL.FEATURE_HEAD.LINEAR_OUT_FEATURES != -1:
+                self.d_model = cfg.MODEL.FEATURE_HEAD.LINEAR_OUT_FEATURES
+            self.input_linear = nn.Sequential(
+                nn.Linear(fusion_size, self.d_model),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.input_linear = nn.Identity()
 
     def forward(self, visual_input, motion_input):
-        fusion_input = torch.cat((visual_input, motion_input), dim=-1)
+        if self.with_visual and self.with_motion:
+            fusion_input = torch.cat((visual_input, motion_input), dim=-1)
+        elif self.with_visual:
+            fusion_input = visual_input
+        elif self.with_motion:
+            fusion_input = motion_input
         fusion_input = self.input_linear(fusion_input)
         return fusion_input
 
@@ -33,13 +88,13 @@ class LSTR(nn.Module):
         self.long_memory_num_samples = cfg.MODEL.LSTR.LONG_MEMORY_NUM_SAMPLES
         self.long_enabled = self.long_memory_num_samples > 0
         if self.long_enabled:
-            self.feature_head_long = FeatureHead()
+            self.feature_head_long = BaseFeatureHead(cfg)
 
         # Build work feature head
         self.work_memory_num_samples = cfg.MODEL.LSTR.WORK_MEMORY_NUM_SAMPLES
         self.work_enabled = self.work_memory_num_samples > 0
         if self.work_enabled:
-            self.feature_head_work = FeatureHead()
+            self.feature_head_work = BaseFeatureHead(cfg)
 
         self.d_model = self.feature_head_work.d_model
         self.num_heads = cfg.MODEL.LSTR.NUM_HEADS

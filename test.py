@@ -22,3 +22,4 @@ dataset = get_dataset(cfg)
 models = get_model(cfg, pretrained=False)
 device = get_device(cfg)
 batch_size = 32
+

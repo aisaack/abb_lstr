@@ -20,6 +20,7 @@ class DataSet(Dataset):
         self.cfg = cfg
         self.class_names = self.cfg.DATA.CLASS_NAMES
         self.video_path = os.path.join(self.cfg.DATA.BASE_PATH, self.cfg.DATA.VIDEO_PATH)
+        self.fps = cfg.DATA.NUM_FRAMES
         if phase == 'train':
             self.file_list = self.cfg.DATA.TRAIN_SESSION_SET
         elif phase == 'test':
@@ -44,39 +45,29 @@ class DataSet(Dataset):
         path2file = os.path.join(self.video_path, video_file + '.mp4')
         video_class = self.get_vid_cls(video_file)
         
-        starts, ends = self.get_action_duration(video_class, video_file)
+        start_end_indices = self.get_action_duration(video_class, video_file)
         # print(video_file, video_class, starts, ends)
     
         cap = cv2.VideoCapture(path2file)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         # total_duration = self.get_video_duration(cap, total_frames)
 
-        video_cap = list()
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            video_cap.append(frame)
-        cap.release()
+        if self.fps == 30:
+            video_cap = self.extract_30(cap)
+        elif self.fps == 24:
+            video_cap = self.extract_24(cap)
 
+        total_frames = len(video_cap)
         ditch = total_frames % self.sampling_rate
         if ditch != 0:
             video_cap = video_cap[:-ditch]
-        rgbs = self.get_rgb_sample(video_cap, int(total_frames / self.sampling_rate))
         flows = self.get_flow_sample(video_cap)
-        targets = self.get_target_label(rgbs, starts, ends, video_class)
-         
-        rgbs = dict(video=rgbs)
-        rgbs = self.transform.rgb(rgbs)
-        rgbs = rgbs['video']
-
         flows = dict(video=flows)
         flows = self.transform.rgb(flows)
         flows = flows['video']
         flows = torch.cat([flows[::2, :, :, :], flows[1::2, :, :, :]], dim=1)
-        # print('rgb size: ', rgbs.size())
-        # print('flow size: ', flows.size())
-        # print('target size: ', targets.size())
+
+        rgbs = flows[:, :3, :, :].clone()
+        targets = self.get_target_label(rgbs, start_end_indices, video_class)
 
         return rgbs, flows, targets
         
@@ -85,30 +76,46 @@ class DataSet(Dataset):
     def __len__(self):
         return len(self.file_list)
     
-    def get_video_duration(self, cap, total_frames):
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        duration = total_frames / fps
-        cap.release()
-        return duration
+    def extract_24(self, capture):
+        video_cap = list()
+        idx = 0
+        while True:
+            ret, frame = capture.read()
+            idx += 1
+            if not ret:
+                break
+            if idx % 6 != 0:
+                video_cap.append(frame)
+        return video_cap
     
+    def extract_30(self, caputure):
+        video_cap = list()
+        while True:
+            ret, frame = caputure.read()
+            idx += 1
+            if not ret:
+                break
+            video_cap.append(frame)
+        return video_cap
+        
     def uniform_temporal_subsample(self, video, num_frames):
         total_frames = len(video)
         indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
         return [video[i] for i in indices]
     
 
-    def get_rgb_sample(self, video_cap, num_rgb_sample):
-        rgb_sam = self.uniform_temporal_subsample(video_cap, num_rgb_sample)
+    # def get_rgb_sample(self, video_cap, num_rgb_sample):
+    #     rgb_sam = self.uniform_temporal_subsample(video_cap, num_rgb_sample)
 
-        for i, frame in enumerate(rgb_sam):
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb_sam[i] = frame
+    #     for i, frame in enumerate(rgb_sam):
+    #         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    #         rgb_sam[i] = frame
 
-        rgbs = np.stack(rgb_sam, axis=0)
-        rgbs = torch.from_numpy(rgbs).type(torch.float32)
-        rgbs = rgbs.permute(0, 3, 1, 2)
+    #     rgbs = np.stack(rgb_sam, axis=0)
+    #     rgbs = torch.from_numpy(rgbs).type(torch.float32)
+    #     rgbs = rgbs.permute(0, 3, 1, 2)
 
-        return rgbs
+    #     return rgbs
     
     def get_flow_sample(self, video_cap):
         flow_sam = self.get_first_last_frames(video_cap)
@@ -143,47 +150,39 @@ class DataSet(Dataset):
             
     def get_action_duration(self, vid_cls, vid_name):
         '''
-        Returns [int], [int]
+        Returns [[int, int], [int, int], ...]
             timestemps of starting and end of action
         '''
-        anno_path = os.path.join(self.anno_path, vid_cls + '_val.txt')
+        key = 'val' if self.phase == 'train' else 'test'
+        anno_path = os.path.join(self.anno_path, vid_cls + f'_{key}.txt')
         with open(anno_path, 'r') as f:
             anno = f.readlines()
 
-        starts = []
-        ends = []
+        start_end_idx = []
         for ann in anno:
             anno_list = ann.split(' ')
             if vid_name == anno_list[0]:
                 start = float(anno_list[2])
                 end = float(anno_list[3].rstrip())
-                starts.append(start)
-                ends.append(end)
-        
-        return starts, ends
+                start_end_idx.append([start, end])
+        return start_end_idx
     
-    def get_target_label(self, video_frames, starts, ends, video_class):
+    def get_target_label(self, video_frames, start_end_indices, video_class):
         target_label = torch.zeros((len(video_frames), len(self.class_names)))
         class_id = self.class_names.index(video_class)
-        for start, end in zip(starts, ends):
-            start = start * (self.sampling_rate-1)
-            end = end * (self.sampling_rate-1)
-            target_label[int(start):int(end)+1, class_id] = 1
+        for indices in start_end_indices:
+            start, end = indices
+            multiplyer = self.fps / self.sampling_rate
+            frame_start, frame_end = int(start * multiplyer), int(end * multiplyer)
+            target_label[frame_start:frame_end, class_id] = 1
         return target_label
     
-    @staticmethod
-    def get_video_duration(video_path):
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps
-        return duration
 
-    @staticmethod
-    def uniform_temporal_subsample(video, num_frames):
-        total_frames = len(video)
-        indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-        return [video[i] for i in indices]
+    # @staticmethod
+    # def uniform_temporal_subsample(video, num_frames):
+    #     total_frames = len(video)
+    #     indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+    #     return [video[i] for i in indices]
     
     
 
